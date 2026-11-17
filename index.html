@@ -47,10 +47,19 @@ input{border:1px solid var(--line);border-radius:8px;padding:10px;font-size:15px
   <p id="err" style="color:#b3261e"></p>
 </div>
 
+<div id="nameScreen" style="display:none;height:100%;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:20px">
+  <h1 style="color:var(--main)">তোমার ইউজারনেম বেছে নাও</h1>
+  <p>সবাই চ্যাটে এই নামটাই দেখবে, তোমার Gmail দেখবে না</p>
+  <input id="uname" maxlength="20" placeholder="যেমন: shafi_bhai" style="max-width:300px" onkeydown="if(event.key==='Enter')saveName()">
+  <button onclick="saveName()">সেভ করো</button>
+  <button class="ghost" id="cancelName" style="display:none" onclick="cancelName()">বাতিল</button>
+  <p id="nameErr" style="color:#b3261e"></p>
+</div>
+
 <div id="app">
  <div class="wrap" id="wrap">
   <div class="side">
-    <header><b id="me"></b><button class="ghost" onclick="auth.signOut()">বের হও</button></header>
+    <header><b id="me"></b><span style="display:flex;gap:6px"><button class="ghost" onclick="editName()">✎ নাম</button><button class="ghost" onclick="auth.signOut()">বের হও</button></span></header>
     <div class="rooms" id="rooms"></div>
     <div class="new">
       <input id="newName" placeholder="নতুন রুমের নাম">
@@ -77,7 +86,7 @@ input{border:1px solid var(--line);border-radius:8px;padding:10px;font-size:15px
 <script>
 // ===== এখানে তোমার Firebase config বসাও =====
 const firebaseConfig = {
-  apiKey: "AIzaSyDneXBVINVYkDnQeic_-WjEwVTc_sliu7g",
+   apiKey: "AIzaSyDneXBVINVYkDnQeic_-WjEwVTc_sliu7g",
   authDomain: "adda-chat-7b9f7.firebaseapp.com",
   projectId: "adda-chat-7b9f7",
   storageBucket: "adda-chat-7b9f7.firebasestorage.app",
@@ -88,7 +97,7 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth(), db = firebase.firestore();
-let user = null, email = "", curRoom = null, unsubRooms = null, unsubMsgs = null, roomData = {};
+let user = null, email = "", username = "", nameCache = {}, curRoom = null, unsubRooms = null, unsubMsgs = null, roomData = {};
 const $ = id => document.getElementById(id);
 const esc = s => s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
@@ -99,15 +108,57 @@ function loginGoogle(){
 auth.onAuthStateChanged(u => {
   user = u;
   if(!u){
-    $("login").style.display = "flex"; $("app").style.display = "none";
+    $("login").style.display = "flex"; $("app").style.display = "none"; $("nameScreen").style.display = "none";
     if(unsubRooms) unsubRooms(); if(unsubMsgs) unsubMsgs();
     return;
   }
   email = u.email.toLowerCase();
-  $("me").textContent = u.displayName || email;
-  $("login").style.display = "none"; $("app").style.display = "block";
-  watchRooms();
+  $("login").style.display = "none";
+  db.collection("users").doc(email).get().then(d => {
+    if(d.exists && d.data().username){ username = d.data().username; nameCache[email] = username; startApp(); }
+    else { $("nameScreen").style.display = "flex"; }
+  }).catch(e => { $("nameScreen").style.display = "flex"; $("nameErr").textContent = e.message; });
 });
+
+function startApp(){
+  $("nameScreen").style.display = "none";
+  $("me").textContent = username;
+  $("cancelName").style.display = "none";
+  $("app").style.display = "block";
+  watchRooms();
+  if(curRoom && roomData[curRoom]) showHeader();
+}
+
+function editName(){
+  $("uname").value = username;
+  $("nameErr").textContent = "";
+  $("cancelName").style.display = "inline-block";
+  $("app").style.display = "none";
+  $("nameScreen").style.display = "flex";
+}
+
+function cancelName(){
+  $("nameScreen").style.display = "none";
+  $("app").style.display = "block";
+}
+
+async function saveName(){
+  const n = $("uname").value.trim();
+  $("nameErr").textContent = "";
+  if(n.length < 2 || n.length > 20) return $("nameErr").textContent = "নাম ২ থেকে ২০ অক্ষরের মধ্যে হতে হবে";
+  try{
+    const q = await db.collection("users").where("usernameLower","==",n.toLowerCase()).get();
+    if(q.docs.some(d => d.id !== email)) return $("nameErr").textContent = "এই নামটা আগেই কেউ নিয়ে নিয়েছে, অন্য নাম দাও";
+    await db.collection("users").doc(email).set({username:n, usernameLower:n.toLowerCase()});
+    username = n; nameCache[email] = n; startApp();
+  }catch(e){ $("nameErr").textContent = e.message; }
+}
+
+async function nameOf(m){
+  if(nameCache[m]) return nameCache[m];
+  try{ const d = await db.collection("users").doc(m).get(); if(d.exists){ nameCache[m] = d.data().username; return nameCache[m]; } }catch(e){}
+  return m;
+}
 
 function watchRooms(){
   if(unsubRooms) unsubRooms();
@@ -135,7 +186,7 @@ function createRoom(){
 function showHeader(){
   const r = roomData[curRoom];
   $("rTitle").textContent = r.name;
-  $("rMembers").textContent = r.members.join(", ");
+  Promise.all(r.members.map(nameOf)).then(l => { if(roomData[curRoom] === r) $("rMembers").textContent = l.join(", "); });
   $("addBox").style.display = "flex";
 }
 
@@ -146,12 +197,17 @@ function openRoom(id){
   showHeader();
   watchRooms();
   if(unsubMsgs) unsubMsgs();
-  unsubMsgs = db.collection("rooms").doc(id).collection("messages").orderBy("at").limit(300).onSnapshot(snap => {
+  nameCache = {}; nameCache[email] = username;
+  unsubMsgs = db.collection("rooms").doc(id).collection("messages").orderBy("at").limit(300).onSnapshot(async snap => {
+    const docs = [];
+    snap.forEach(d => docs.push(d.data()));
+    const names = await Promise.all(docs.map(m => nameOf(m.from)));
+    if(curRoom !== id) return;
     const box = $("msgs");
-    const html = [];
-    snap.forEach(d => {
-      const m = d.data(), mine = m.from === email;
-      html.push(`<div class="m ${mine?'me':''}">${mine?'':'<b>'+esc(m.name||m.from)+'</b>'}${esc(m.text)}</div>`);
+    const html = docs.map((m,i) => {
+      const mine = m.from === email;
+      const nm = names[i].includes("@") ? "অজানা" : names[i];
+      return `<div class="m ${mine?'me':''}">${mine?'':'<b>'+esc(nm)+'</b>'}${esc(m.text)}</div>`;
     });
     box.innerHTML = html.join("") || '<div class="empty">এখনো কোনো মেসেজ নেই। প্রথম মেসেজটা তুমি পাঠাও।</div>';
     box.scrollTop = box.scrollHeight;
@@ -165,7 +221,7 @@ function sendMsg(){
   if(!t || !curRoom) return;
   $("txt").value = "";
   db.collection("rooms").doc(curRoom).collection("messages").add({
-    text:t, from:email, name:user.displayName||email,
+    text:t, from:email, name:username,
     at: firebase.firestore.FieldValue.serverTimestamp()
   });
 }
