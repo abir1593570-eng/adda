@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>আড্ডা</title>
+<style>
+:root{--bg:#f3efe6;--panel:#fffdf8;--ink:#1d2b2a;--mute:#6b7a78;--main:#0f6b5c;--me:#d9f0e8;--line:#e2dccd}
+*{box-sizing:border-box;margin:0;font-family:"Noto Sans Bengali","Segoe UI",sans-serif}
+html,body{height:100%;background:var(--bg);color:var(--ink)}
+button{cursor:pointer;border:0;border-radius:8px;padding:10px 14px;background:var(--main);color:#fff;font-size:15px}
+button.ghost{background:transparent;color:var(--main);border:1px solid var(--main)}
+input{border:1px solid var(--line);border-radius:8px;padding:10px;font-size:15px;background:#fff;width:100%}
+#login{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;text-align:center;padding:20px}
+#login h1{font-size:44px;color:var(--main)}
+#app{display:none;height:100%}
+.wrap{display:flex;height:100%}
+.side{width:300px;background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column}
+.side header,.main header{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center;justify-content:space-between}
+.rooms{flex:1;overflow:auto}
+.room{padding:12px 14px;border-bottom:1px solid var(--line);cursor:pointer}
+.room.on{background:var(--me)}
+.room small{display:block;color:var(--mute);font-size:12px}
+.new{padding:12px;display:flex;gap:6px;border-top:1px solid var(--line)}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.main header{background:var(--panel)}
+#msgs{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:8px}
+.m{max-width:75%;padding:8px 12px;border-radius:12px;background:var(--panel);border:1px solid var(--line);align-self:flex-start;word-wrap:break-word;white-space:pre-wrap}
+.m.me{align-self:flex-end;background:var(--me);border-color:#bfe3d6}
+.m b{display:block;font-size:12px;color:var(--main);margin-bottom:2px}
+.send{display:flex;gap:8px;padding:10px;background:var(--panel);border-top:1px solid var(--line)}
+.empty{margin:auto;color:var(--mute);text-align:center;padding:20px}
+.back{display:none}
+@media(max-width:700px){
+ .side{width:100%}.main{display:none}
+ .wrap.open .side{display:none}.wrap.open .main{display:flex}
+ .back{display:inline-block}
+}
+</style>
+</head>
+<body>
+
+<div id="login">
+  <h1>আড্ডা</h1>
+  <p>বন্ধুদের সাথে Gmail দিয়ে চ্যাট করো</p>
+  <button onclick="loginGoogle()">Google দিয়ে ঢোকো</button>
+  <p id="err" style="color:#b3261e"></p>
+</div>
+
+<div id="app">
+ <div class="wrap" id="wrap">
+  <div class="side">
+    <header><b id="me"></b><button class="ghost" onclick="auth.signOut()">বের হও</button></header>
+    <div class="rooms" id="rooms"></div>
+    <div class="new">
+      <input id="newName" placeholder="নতুন রুমের নাম">
+      <button onclick="createRoom()">বানাও</button>
+    </div>
+  </div>
+  <div class="main">
+    <header>
+      <div><button class="ghost back" onclick="closeRoom()">←</button> <b id="rTitle">রুম বেছে নাও</b><small id="rMembers" style="display:block;color:var(--mute);font-size:12px"></small></div>
+      <div id="addBox" style="display:none;gap:6px;width:260px"><input id="addMail" placeholder="বন্ধুর Gmail"><button onclick="addMember()">যোগ</button></div>
+    </header>
+    <div id="msgs"><div class="empty">বাম পাশ থেকে একটা রুম বেছে নাও<br>অথবা নতুন রুম বানাও</div></div>
+    <div class="send" id="sendBox" style="display:none">
+      <input id="txt" placeholder="মেসেজ লেখো..." onkeydown="if(event.key==='Enter')sendMsg()">
+      <button onclick="sendMsg()">পাঠাও</button>
+    </div>
+  </div>
+ </div>
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script>
+// ===== এখানে তোমার Firebase config বসাও =====
+const firebaseConfig = {
+  apiKey: "...",
+  authDomain: "...",
+  projectId: "...",
+  storageBucket: "...",
+  messagingSenderId: "...",
+  appId: "..."
+};
+// =============================================
+
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth(), db = firebase.firestore();
+let user = null, email = "", curRoom = null, unsubRooms = null, unsubMsgs = null, roomData = {};
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function loginGoogle(){
+  auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()).catch(e => $("err").textContent = e.message);
+}
+
+auth.onAuthStateChanged(u => {
+  user = u;
+  if(!u){
+    $("login").style.display = "flex"; $("app").style.display = "none";
+    if(unsubRooms) unsubRooms(); if(unsubMsgs) unsubMsgs();
+    return;
+  }
+  email = u.email.toLowerCase();
+  $("me").textContent = u.displayName || email;
+  $("login").style.display = "none"; $("app").style.display = "block";
+  watchRooms();
+});
+
+function watchRooms(){
+  if(unsubRooms) unsubRooms();
+  unsubRooms = db.collection("rooms").where("members","array-contains",email).onSnapshot(snap => {
+    roomData = {};
+    const list = [];
+    snap.forEach(d => { roomData[d.id] = d.data(); list.push({id:d.id, ...d.data()}); });
+    list.sort((a,b) => (b.createdAt?.seconds||0) - (a.createdAt?.seconds||0));
+    $("rooms").innerHTML = list.length ? list.map(r =>
+      `<div class="room ${r.id===curRoom?'on':''}" onclick="openRoom('${r.id}')">${esc(r.name)}<small>${r.members.length} জন সদস্য</small></div>`
+    ).join("") : '<div class="empty">কোনো রুম নেই। নিচে থেকে বানাও।</div>';
+    if(curRoom && roomData[curRoom]) showHeader();
+  }, e => $("rooms").innerHTML = '<div class="empty">'+esc(e.message)+'</div>');
+}
+
+function createRoom(){
+  const name = $("newName").value.trim();
+  if(!name) return;
+  db.collection("rooms").add({
+    name, members:[email], createdBy:email,
+    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+  }).then(r => { $("newName").value = ""; openRoom(r.id); });
+}
+
+function showHeader(){
+  const r = roomData[curRoom];
+  $("rTitle").textContent = r.name;
+  $("rMembers").textContent = r.members.join(", ");
+  $("addBox").style.display = "flex";
+}
+
+function openRoom(id){
+  curRoom = id;
+  $("wrap").classList.add("open");
+  $("sendBox").style.display = "flex";
+  showHeader();
+  watchRooms();
+  if(unsubMsgs) unsubMsgs();
+  unsubMsgs = db.collection("rooms").doc(id).collection("messages").orderBy("at").limit(300).onSnapshot(snap => {
+    const box = $("msgs");
+    const html = [];
+    snap.forEach(d => {
+      const m = d.data(), mine = m.from === email;
+      html.push(`<div class="m ${mine?'me':''}">${mine?'':'<b>'+esc(m.name||m.from)+'</b>'}${esc(m.text)}</div>`);
+    });
+    box.innerHTML = html.join("") || '<div class="empty">এখনো কোনো মেসেজ নেই। প্রথম মেসেজটা তুমি পাঠাও।</div>';
+    box.scrollTop = box.scrollHeight;
+  });
+}
+
+function closeRoom(){ $("wrap").classList.remove("open"); }
+
+function sendMsg(){
+  const t = $("txt").value.trim();
+  if(!t || !curRoom) return;
+  $("txt").value = "";
+  db.collection("rooms").doc(curRoom).collection("messages").add({
+    text:t, from:email, name:user.displayName||email,
+    at: firebase.firestore.FieldValue.serverTimestamp()
+  });
+}
+
+function addMember(){
+  const m = $("addMail").value.trim().toLowerCase();
+  if(!m || !m.includes("@")) return alert("সঠিক Gmail লেখো");
+  db.collection("rooms").doc(curRoom).update({
+    members: firebase.firestore.FieldValue.arrayUnion(m)
+  }).then(() => $("addMail").value = "").catch(e => alert(e.message));
+}
+</script>
+</body>
+</html>
